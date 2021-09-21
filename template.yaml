@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ShopifyIntegration
+  
+# Metadata to use for the publishing to the SAR
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: thetis-ims-shopify-integration
+    Description: Application for integration of Thetis IMS with Shopify
+    Author: thetis-apps
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: LICENSE.txt
+    ReadmeUrl: README.md
+    Labels: ['thetis-ims']
+    HomePageUrl: https://github.com/thetis-apps/ShopifyIntegration
+    SemanticVersion: 0.0.1
+    SourceCodeUrl: https://github.com/thetis-apps/ShopifyIntegration
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: nodejs12.x
+
+Parameters:
+  EventSourceName:
+    Description: The name of the event source for the event bus.
+    Type: String
+    MinLength: 1
+  ShopifyApiKey:
+    Description: The api key that gives access to the Shopify API.
+    Type: String
+    MinLength: 1
+  ShopifyApiSecretKey:
+    Description: The api secret key needed for access to the Shopify API.
+    Type: String
+    MinLength: 1
+  ClientId:
+    Description: Key of the parameter that has your Thetis client id as its value.
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: ThetisClientId
+  ClientSecret:
+    Description: Key of the parameter that has your Thetis client secret as its value.
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: ThetisClientSecret
+  DevOpsEmail:
+    Description: The email address to send mail to when messages in the dead letter queue.
+    Type: String
+    MinLength: 4
+
+Resources:
+
+  ShopSellerMap:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST 
+      AttributeDefinitions: 
+        - 
+          AttributeName: "ShopDomain"
+          AttributeType: "S"
+        - 
+          AttributeName: "ContextId"
+          AttributeType: "S"
+        - 
+          AttributeName: "SellerNumber"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "ShopDomain"
+          KeyType: "HASH"
+      GlobalSecondaryIndexes: 
+        - 
+          IndexName: "ContextIdx"
+          KeySchema: 
+            - 
+              AttributeName: "ContextId"
+              KeyType: "HASH"
+            - 
+              AttributeName: "SellerNumber"
+              KeyType: "RANGE"
+          Projection:
+            ProjectionType: "KEYS_ONLY"    
+            
+  ShopifyEventBus:
+    Type: AWS::Events::EventBus
+    Properties: 
+      EventSourceName: 
+        Ref: EventSourceName
+      Name: 
+        Ref: EventSourceName
+        
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowHeaders: "'Access-Control-Allow-Origin,x-requested-with,content-type'"
+        AllowOrigin: "'shopify.thetis-apps.net'" 
+
+  StartInstall:
+    Type: AWS::Serverless::Function 
+    Properties:
+      Handler: src/handler.startInstall
+      Runtime: nodejs12.x
+      Events:
+        Request:
+          Type: Api 
+          Properties:
+            RestApiId: 
+              Ref: Api
+            Path: /startInstall
+            Method: get
+      Environment:
+        Variables:
+          ShopifyApiKey:
+            Ref: ShopifyApiKey
+          ShopifyApiSecretKey:
+            Ref: ShopifyApiSecretKey
+            
+  Install:
+    Type: AWS::Serverless::Function 
+    Properties:
+      Handler: src/handler.install
+      Runtime: nodejs12.x
+      Events:
+        Request:
+          Type: Api 
+          Properties:
+            RestApiId: 
+              Ref: Api
+            Path: /install
+            Method: get
+      Environment:
+        Variables:
+          ShopifyApiKey:
+            Ref: ShopifyApiKey
+          ShopifyApiSecretKey:
+            Ref: ShopifyApiSecretKey
+
+  PushOrder:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Function to push orders from Shopify to Thetis IMS
+      Handler: src/handler.pushOrder
+      Timeout: 300
+      Environment:
+        Variables:
+          ClientId:
+            Ref: ClientId
+          ClientSecret:
+            Ref: ClientSecret
+          ShopifyApiKey:
+            Ref: ShopifyApiKey
+          ShopifyApiSecretKey:
+            Ref: ShopifyApiSecretKey
+          StoreSellerMap:
+            Ref: ShopSellerMap
+      Events:
+        OrderCreated:
+          Type: CloudWatchEvent
+          Properties:
+            EventBusName: 
+              Ref: ShopifyEventBus
+            Pattern: 
+              detail-type: 
+                - shopifyWebhook
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+
+  # The usual error handling setup
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties: {}
+  Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when any message is moved to the dead letter queue.
+      AlarmActions:
+      - Ref: IncidentTopic
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: ApproximateNumberOfMessagesVisible
+      Period: 60
+      Namespace: AWS/SQS
+      Threshold: '0'
+      Unit: Count
+      Dimensions:
+      - Name: QueueName
+        Value:
+          Fn::GetAtt:
+          - DeadLetterQueue
+          - QueueName
+      TreatMissingData: notBreaching
+      Statistic: Maximum
+  IncidentTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+      - Endpoint: 
+          Ref: DevOpsEmail
+        Protocol: email
+      DisplayName: Incidents to be handled by Devops.
+      
+Outputs:
+  Api:
+    Description: "API Gateway endpoint URL for Prod stage for Install function"
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+

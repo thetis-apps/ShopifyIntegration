@@ -1,0 +1,10 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "TestShopifyIntegration"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1q52gionhjeg3"
+s3_prefix = "TestShopifyIntegration"
+region = "eu-west-1"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "EventSourceName=\"aws.partner/shopify.com/5817623/thetis-apps\" ShopifyApiKey=\"3971aecca3407eb3acdda060437b6a06\" ShopifyApiSecretKey=\"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\" ClientId=\"ThetisClientId\" ClientSecret=\"ThetisClientSecret\" DevOpsEmail=\"lmp@thetis-apps.com\""
